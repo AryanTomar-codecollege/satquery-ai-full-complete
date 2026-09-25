@@ -1,0 +1,9 @@
+{
+  "project": "SatQuery AI",
+  "sih_problem": "SIH 26167",
+  "local_python": "3.11",
+  "kaggle_python": "3.9",
+  "model": "EarthDial_4B_MS",
+  "lora_training": false,
+  "source_reference": "Uploaded EarthDial Kaggle service"
+}
