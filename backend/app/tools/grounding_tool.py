@@ -1,14 +1,15 @@
 import re
 from app.services.geospatial import pixel_bbox_to_geojson_feature
 from app.services.kaggle_client import infer
+from app.services.confidence import estimate_confidence
+from app.services.prompt_builder import build_grounding_prompt
 
 BOX_RE = re.compile(
     r"(?:bbox\s*[:=]?\s*)?[\[\(]\s*"
     r"(-?\d+(?:\.\d+)?)\s*[, ]\s*"
     r"(-?\d+(?:\.\d+)?)\s*[, ]\s*"
     r"(-?\d+(?:\.\d+)?)\s*[, ]\s*"
-    r"(-?\d+(?:\.\d+)?)\s*[\]\)]",
-    re.I,
+    r"(-?\d+(?:\.\d+)?)\s*[\]\)]", re.I
 )
 
 def _parse_boxes(answer):
@@ -23,8 +24,8 @@ def _space(answer):
     return "pixel"
 
 def run(file_tuple, file_bytes: bytes, query: str):
-    result = infer(file_tuple, query, "[grounding]")
-    answer = str(result.get("answer", ""))
+    result = infer(file_tuple, build_grounding_prompt(query), "[grounding]")
+    answer = str(result.get("answer", "")).strip()
     space = _space(answer)
     features = []
     for bbox in _parse_boxes(answer):
@@ -35,7 +36,7 @@ def run(file_tuple, file_bytes: bytes, query: str):
     return {
         "answer": answer,
         "geojson": {"type": "FeatureCollection", "features": features},
-        "confidence": 0.68 if features else 0.55,
+        "confidence": estimate_confidence("grounding", answer, spatial_features=len(features)),
         "model_used": result.get("model", "EarthDial_4B_MS"),
         "parameters": {
             "tag": result.get("tag", "[grounding]"),

@@ -1,4 +1,3 @@
-
 const DEFAULT_API_BASE = 'http://127.0.0.1:8001';
 
 export function getApiBaseUrl() {
@@ -17,7 +16,6 @@ export async function healthCheck() {
   const backend = await backendResponse.json();
   let model = null;
   try { model = await modelResponse.json(); } catch {}
-
   return { backend, model };
 }
 
@@ -42,29 +40,33 @@ export async function postQuery({ files, query, taskHint = 'auto' }) {
   formData.append('query', query.trim());
   formData.append('task_hint', taskHint || 'auto');
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 310000);
+
   let response;
   try {
     response = await fetch(`${getApiBaseUrl()}/api/query`, {
       method: 'POST',
-      body: formData
+      body: formData,
+      signal: controller.signal
     });
-  } catch {
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const err = new Error('Analysis timed out while waiting for EarthDial on Kaggle.');
+      err.code = 'REQUEST_TIMEOUT';
+      throw err;
+    }
     const err = new Error(`Cannot reach FastAPI at ${getApiBaseUrl()}.`);
     err.code = 'BACKEND_UNREACHABLE';
     throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   let payload = null;
   try { payload = await response.json(); } catch {}
 
-  if (!response.ok) {
-    const error = errorFromPayload(payload);
-    const err = new Error(error.message);
-    err.code = error.code;
-    throw err;
-  }
-
-  if (!payload?.success) {
+  if (!response.ok || !payload?.success) {
     const error = errorFromPayload(payload);
     const err = new Error(error.message);
     err.code = error.code;
