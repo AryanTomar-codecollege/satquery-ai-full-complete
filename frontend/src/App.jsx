@@ -1,22 +1,8 @@
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp,
-  Bot,
-  BrainCircuit,
-  CheckCircle2,
-  Compass,
-  FileClock,
-  Layers,
-  Link2,
-  Loader2,
-  MapPin,
-  Play,
-  Search,
-  Server,
-  Settings,
-  Sparkles,
-  UploadCloud,
-  X
+  ArrowUp, Bot, BrainCircuit, Compass, Layers, Link2, Loader2, MapPin,
+  Play, Search, Server, Sparkles, UploadCloud, X
 } from 'lucide-react';
 import Sidebar from './components/layout/Sidebar';
 import MapView from './components/map/MapView';
@@ -50,20 +36,17 @@ function readStorage(key) {
 }
 
 function writeStorage(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function fileLabel(file) {
-  const sizeMb = file.size / (1024 * 1024);
-  return `${sizeMb.toFixed(1)} MB · ${file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff') || file.name.toLowerCase().endsWith('.geotiff') ? 'GeoTIFF' : 'Preview only'}`;
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
 function isGeoTiff(file) {
   return /\.(tif|tiff|geotiff)$/i.test(file?.name || '');
 }
 
-function displayTask(trace) {
-  return trace?.selected_task || 'Unknown';
+function fileLabel(file) {
+  return `${(file.size / (1024 * 1024)).toFixed(1)} MB · ${
+    isGeoTiff(file) ? 'GeoTIFF' : 'Preview only'
+  }`;
 }
 
 function App() {
@@ -73,18 +56,20 @@ function App() {
   const [taskHint, setTaskHint] = useState('auto');
   const [files, setFiles] = useState([]);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [currentResult, setCurrentResult] = useState(null);
   const [history, setHistory] = useState(() => readStorage(HISTORY_KEY));
   const [saved, setSaved] = useState(() => readStorage(SAVED_KEY));
+
   const [backendOnline, setBackendOnline] = useState(false);
   const [earthDialOnline, setEarthDialOnline] = useState(false);
   const [omniRouteActive, setOmniRouteActive] = useState(null);
   const [lastCheckedTime, setLastCheckedTime] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+
   const fileInputRef = useRef(null);
-  const voiceRecognitionRef = useRef(null);
 
   const [viewMode, setViewMode] = useState('Single View');
   const [mapStyle, setMapStyle] = useState('satellite');
@@ -96,15 +81,21 @@ function App() {
 
   const showToast = useCallback((msg) => {
     setToastMessage(msg);
-    window.setTimeout(() => setToastMessage((prev) => (prev === msg ? null : prev)), 3500);
+    window.setTimeout(() => {
+      setToastMessage(prev => (prev === msg ? null : prev));
+    }, 3500);
   }, []);
 
   const checkHealth = useCallback(async () => {
     try {
       const result = await healthCheck();
       setBackendOnline(true);
-      setEarthDialOnline(Boolean(result?.model?.status === 'online' || result?.model?.model_loaded === true));
-      setLastCheckedTime(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
+      setEarthDialOnline(Boolean(
+        result?.model?.status === 'online' || result?.model?.model_loaded === true
+      ));
+      setLastCheckedTime(
+        new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      );
     } catch {
       setBackendOnline(false);
       setEarthDialOnline(false);
@@ -113,8 +104,8 @@ function App() {
 
   useEffect(() => {
     checkHealth();
-    const id = window.setInterval(checkHealth, 30000);
-    return () => window.clearInterval(id);
+    const timer = window.setInterval(checkHealth, 30000);
+    return () => window.clearInterval(timer);
   }, [checkHealth]);
 
   useEffect(() => {
@@ -124,24 +115,21 @@ function App() {
   }, [currentResult]);
 
   const addFiles = useCallback((incoming) => {
-    const existing = [...files];
-    const next = [...existing, ...incoming];
-
-    const previewOnly = next.filter((file) => !isGeoTiff(file));
-    const analysis = next.filter(isGeoTiff).slice(-2);
-
-    if (previewOnly.length && !analysis.length) {
-      showToast('PNG/JPG files are preview-only. Upload at least one GeoTIFF for backend analysis.');
+    const geotiffs = incoming.filter(isGeoTiff);
+    if (geotiffs.length === 0) {
+      showToast('Please upload GeoTIFF (.tif/.tiff/.geotiff) files for backend analysis.');
+      return;
     }
 
-    if (analysis.length < next.filter(isGeoTiff).length) {
-      showToast('The backend accepts at most 2 GeoTIFF analysis files.');
-    }
-
-    const finalFiles = [...analysis];
-    const extras = next.filter((file) => !isGeoTiff(file)).slice(-2);
-    setFiles([...finalFiles, ...extras].slice(-4));
-  }, [files, showToast]);
+    setFiles(prev => {
+      const combined = [...prev.filter(isGeoTiff), ...geotiffs];
+      const limited = combined.slice(-2);
+      if (combined.length > 2) {
+        showToast('Only the latest 2 GeoTIFF files are used for backend analysis.');
+      }
+      return limited;
+    });
+  }, [showToast]);
 
   const handleFileChange = (event) => {
     addFiles(Array.from(event.target.files || []));
@@ -155,91 +143,82 @@ function App() {
   };
 
   const removeFile = (target) => {
-    setFiles((prev) => prev.filter((file) => file !== target));
+    setFiles(prev => prev.filter(file => file !== target));
   };
 
   const clearAllFiles = () => setFiles([]);
 
-  const analysisFiles = useMemo(() => files.filter(isGeoTiff).slice(0, 2), [files]);
+  const analysisFiles = useMemo(
+    () => files.filter(isGeoTiff).slice(0, 2),
+    [files]
+  );
 
   const runAnalysis = useCallback(async (queryOverride) => {
     const q = (queryOverride ?? query ?? topSearch).trim();
+
     if (!q) {
       showToast('Enter a query first.');
       return;
     }
     if (analysisFiles.length < 1) {
-      showToast('Upload at least one GeoTIFF. PNG/JPG files are preview-only.');
+      showToast('Upload at least one GeoTIFF first.');
       return;
     }
 
     setIsAnalyzing(true);
+    showToast('Sending analysis to FastAPI…');
+
     try {
       const result = await postQuery({
         files: analysisFiles,
         query: q,
         taskHint: taskHint || 'auto'
       });
+
       setCurrentResult(result);
+
       const record = {
-        id: `${Date.now()}`,
+        id: String(Date.now()),
         query: q,
         answer: result.answer,
         confidence: result.confidence,
-        task: displayTask(result.execution_trace),
+        task: result.execution_trace?.selected_task || 'unknown',
         router: result.execution_trace?.router || 'deterministic',
         timestamp: new Date().toISOString(),
-        metadata: result.metadata || {}
+        metadata: result.metadata || {},
+        result
       };
+
       const nextHistory = [record, ...history].slice(0, 50);
       setHistory(nextHistory);
       writeStorage(HISTORY_KEY, nextHistory);
+
       showToast('Analysis completed successfully.');
     } catch (error) {
       showToast(`${error.code ? `${error.code}: ` : ''}${error.message}`);
-      setCurrentResult((prev) => prev);
     } finally {
       setIsAnalyzing(false);
     }
   }, [analysisFiles, history, query, showToast, taskHint, topSearch]);
-
-  const toggleVoice = () => {
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) {
-      showToast('Voice input is not supported in this browser.');
-      return;
-    }
-    const recognition = new Recognition();
-    voiceRecognitionRef.current = recognition;
-    recognition.lang = 'en-US';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = (event) => {
-      const transcript = event.results?.[0]?.[0]?.transcript || '';
-      setQuery(transcript);
-      showToast('Voice query added to the input.');
-    };
-    recognition.onerror = () => showToast('Voice input could not be completed.');
-    recognition.start();
-    showToast('Listening…');
-  };
 
   const saveCurrentResult = () => {
     if (!currentResult) {
       showToast('Run an analysis before saving a result.');
       return;
     }
+
     const record = {
-      id: `${Date.now()}`,
+      id: String(Date.now()),
       query: currentResult.report?.query || query,
       answer: currentResult.answer,
       confidence: currentResult.confidence,
-      task: displayTask(currentResult.execution_trace),
+      task: currentResult.execution_trace?.selected_task || 'unknown',
       router: currentResult.execution_trace?.router || 'deterministic',
       timestamp: new Date().toISOString(),
       metadata: currentResult.metadata || {},
       result: currentResult
     };
+
     const next = [record, ...saved].slice(0, 50);
     setSaved(next);
     writeStorage(SAVED_KEY, next);
@@ -252,12 +231,6 @@ function App() {
     setActiveNav('Map Analysis');
   };
 
-  const currentStatusText = backendOnline
-    ? earthDialOnline
-      ? 'Connected'
-      : 'Backend connected'
-    : 'Offline';
-
   return (
     <div className="app">
       {toastMessage && <div className="app-toast">{toastMessage}</div>}
@@ -267,7 +240,7 @@ function App() {
         ref={fileInputRef}
         onChange={handleFileChange}
         multiple
-        accept=".tif,.tiff,.geotiff,.png,.jpg,.jpeg"
+        accept=".tif,.tiff,.geotiff"
         style={{ display: 'none' }}
       />
 
@@ -305,7 +278,7 @@ function App() {
               onChange={(event) => setTopSearch(event.target.value)}
               placeholder="Ask about your satellite image..."
             />
-            <button type="submit" disabled={isAnalyzing} title="Run analysis">
+            <button type="submit" disabled={isAnalyzing}>
               {isAnalyzing ? <Loader2 size={18} className="spinner" /> : <ArrowUp size={18} />}
             </button>
           </form>
@@ -332,7 +305,7 @@ function App() {
             records={history}
             onLoad={loadRecord}
             onDelete={(id) => {
-              const next = history.filter((item) => item.id !== id);
+              const next = history.filter(item => item.id !== id);
               setHistory(next);
               writeStorage(HISTORY_KEY, next);
             }}
@@ -352,7 +325,7 @@ function App() {
             records={saved}
             onLoad={loadRecord}
             onDelete={(id) => {
-              const next = saved.filter((item) => item.id !== id);
+              const next = saved.filter(item => item.id !== id);
               setSaved(next);
               writeStorage(SAVED_KEY, next);
             }}
@@ -362,10 +335,7 @@ function App() {
         )}
 
         {activeNav === 'Datasets' && (
-          <DatasetsView
-            onToast={showToast}
-            onGoToMap={() => setActiveNav('Map Analysis')}
-          />
+          <DatasetsView onToast={showToast} onGoToMap={() => setActiveNav('Map Analysis')} />
         )}
 
         {(activeNav === 'Map Analysis' || activeNav === 'Upload & Query') && (
@@ -388,7 +358,7 @@ function App() {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <UploadCloud size={20} />
-                  <b>Drag & drop satellite files here</b>
+                  <b>Drag & drop GeoTIFF files here</b>
                   <span>or</span>
                   <button
                     type="button"
@@ -399,14 +369,11 @@ function App() {
                   >
                     Choose Files
                   </button>
-                  <small>Primary analysis: .tif, .tiff, .geotiff · Max 2 analysis files</small>
+                  <small>Supported: .tif, .tiff, .geotiff · Max 2 files</small>
                 </div>
 
                 <h4>Selected Files ({files.length})</h4>
-                {files.length === 0 && (
-                  <div className="empty-file-note">No files selected.</div>
-                )}
-                {files.map((file) => (
+                {files.map(file => (
                   <div className="file-row" key={`${file.name}-${file.lastModified}`}>
                     <div className="thumb" />
                     <div>
@@ -416,15 +383,16 @@ function App() {
                     <button
                       type="button"
                       className="file-remove-btn"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeFile(file);
-                      }}
+                      onClick={() => removeFile(file)}
                     >
                       <X size={14} />
                     </button>
                   </div>
                 ))}
+
+                {files.length === 0 && (
+                  <div className="empty-file-note">No files selected.</div>
+                )}
 
                 <h4>Query Input</h4>
                 <textarea
@@ -434,18 +402,10 @@ function App() {
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Ask a natural-language question about your satellite image..."
                 />
-                <div className="query-controls">
-                  <div className="counter">{query.length}/500</div>
-                  <button type="button" className="voice-btn" onClick={toggleVoice} title="Use voice input">
-                    Voice
-                  </button>
-                </div>
+                <div className="counter">{query.length}/500</div>
 
                 <h4>Task Hint (Optional)</h4>
-                <select
-                  value={taskHint}
-                  onChange={(event) => setTaskHint(event.target.value)}
-                >
+                <select value={taskHint} onChange={(event) => setTaskHint(event.target.value)}>
                   {TASK_OPTIONS.map(([label, value]) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
@@ -457,15 +417,9 @@ function App() {
                   disabled={isAnalyzing}
                   onClick={() => runAnalysis()}
                 >
-                  {isAnalyzing ? (
-                    <>
-                      <Loader2 size={15} className="spinner" /> Analyzing…
-                    </>
-                  ) : (
-                    <>
-                      <Play size={15} fill="currentColor" /> Run Analysis
-                    </>
-                  )}
+                  {isAnalyzing
+                    ? <><Loader2 size={15} className="spinner" /> Analyzing…</>
+                    : <><Play size={15} fill="currentColor" /> Run Analysis</>}
                 </button>
 
                 <h4>Sample Queries</h4>
@@ -476,7 +430,7 @@ function App() {
                   'What is the CRS, image size, and number of bands?',
                   'Compare these two satellite images and identify the major changes.',
                   'Analyze the optical and SAR images together.'
-                ].map((sample) => (
+                ].map(sample => (
                   <button
                     type="button"
                     className={`sample ${query === sample ? 'active-sample' : ''}`}
@@ -494,7 +448,7 @@ function App() {
 
               <section className="center-panel">
                 <div className="view-tabs">
-                  {['Split View', 'Single View', 'Swipe', 'Side by Side'].map((mode) => (
+                  {['Split View', 'Single View', 'Swipe', 'Side by Side'].map(mode => (
                     <button
                       key={mode}
                       className={viewMode === mode ? 'active' : ''}
@@ -503,7 +457,9 @@ function App() {
                       {mode}
                     </button>
                   ))}
+
                   <div className="grow" />
+
                   <div className="map-layer-selector">
                     <span className="control-label">Map Layer</span>
                     <select value={mapStyle} onChange={(event) => setMapStyle(event.target.value)}>
@@ -512,26 +468,30 @@ function App() {
                       <option value="topo">Topographic</option>
                     </select>
                   </div>
-                  <button
-                    className={showToolsMenu ? 'active' : ''}
-                    onClick={() => setShowToolsMenu((v) => !v)}
-                  >
-                    Tools ⌄
-                  </button>
-                  {showToolsMenu && (
-                    <div className="tools-dropdown-menu">
-                      <button onClick={() => { setShowOverlay((v) => !v); setShowToolsMenu(false); }}>
-                        <Layers size={14} /> {showOverlay ? 'Hide AI Overlays' : 'Show AI Overlays'}
-                      </button>
-                      <button onClick={() => { setIsDrawing((v) => !v); setShowToolsMenu(false); }}>
-                        <MapPin size={14} /> Annotate Region
-                      </button>
-                      <button onClick={() => { setResetTrigger((v) => v + 1); setShowToolsMenu(false); }}>
-                        <Compass size={14} /> Center Coordinates
-                      </button>
-                    </div>
-                  )}
-                  <button onClick={() => setResetTrigger((v) => v + 1)}>Reset View</button>
+
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      className={showToolsMenu ? 'active' : ''}
+                      onClick={() => setShowToolsMenu(v => !v)}
+                    >
+                      Tools ⌄
+                    </button>
+                    {showToolsMenu && (
+                      <div className="tools-dropdown-menu">
+                        <button onClick={() => { setShowOverlay(v => !v); setShowToolsMenu(false); }}>
+                          <Layers size={14} /> {showOverlay ? 'Hide AI Overlays' : 'Show AI Overlays'}
+                        </button>
+                        <button onClick={() => { setIsDrawing(v => !v); setShowToolsMenu(false); }}>
+                          <MapPin size={14} /> Annotate Region
+                        </button>
+                        <button onClick={() => { setResetTrigger(v => v + 1); setShowToolsMenu(false); }}>
+                          <Compass size={14} /> Center Coordinates
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <button onClick={() => setResetTrigger(v => v + 1)}>Reset View</button>
                 </div>
 
                 <MapView
@@ -565,9 +525,10 @@ function App() {
             </div>
 
             <StatusBar
-              lastChecked={lastCheckedTime}
               backendOnline={backendOnline}
               earthDialOnline={earthDialOnline}
+              omniRouteActive={omniRouteActive}
+              lastChecked={lastCheckedTime}
               onRefresh={checkHealth}
             />
           </>
@@ -590,13 +551,13 @@ function Metric({ title, value, sub, icon }) {
   );
 }
 
-function StatusBar({ lastChecked, backendOnline, earthDialOnline, onRefresh }) {
+function StatusBar({ backendOnline, earthDialOnline, omniRouteActive, lastChecked, onRefresh }) {
   return (
     <footer className="statusbar">
       <Status icon={<Server size={20} />} label="Backend" value={backendOnline ? 'Connected' : 'Offline'} good={backendOnline} />
       <Status icon={<Bot size={20} />} label="Model" value={earthDialOnline ? 'EarthDial_4B_MS' : 'Unavailable'} good={earthDialOnline} />
       <Status icon={<BrainCircuit size={20} />} label="LoRA" value="OFF" />
-      <Status icon={<Link2 size={20} />} label="Ngrok" value={earthDialOnline ? 'Connected' : 'Not confirmed'} good={earthDialOnline} />
+      <Status icon={<Link2 size={20} />} label="OmniRoute" value={omniRouteActive === true ? 'Active' : omniRouteActive === false ? 'Fallback' : 'Unknown'} good={omniRouteActive === true} />
       <div className="checked" onClick={onRefresh} style={{ cursor: 'pointer' }}>
         ↻ Last Checked: {lastChecked || '—'}
       </div>
@@ -610,10 +571,7 @@ function Status({ icon, label, value, good }) {
       {icon}
       <div>
         <b>{label}</b>
-        <span className={good ? 'good' : ''}>
-          {good && <i />}
-          {value}
-        </span>
+        <span className={good ? 'good' : ''}>{good && <i />}{value}</span>
       </div>
     </div>
   );
