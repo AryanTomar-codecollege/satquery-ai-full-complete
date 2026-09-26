@@ -18,11 +18,14 @@ def maybe_add_location_request(query: str, base_prompt: str, *, force: bool = Fa
     return base_prompt + """
 
 Also locate the main relevant regions when supported by the image.
-Return machine-readable location evidence at the end using exactly this format:
+You MUST attempt machine-readable location evidence at the end.
+If you can determine a region, return exactly:
 BOXES:
 - label: <feature>; bbox: [x1, y1, x2, y2]; space: normalized_1000
 Use one BOXES line per region. Use normalized_1000 coordinates from 0 to 1000.
-If the target cannot be located reliably, say uncertain and return no BOXES lines.
+Do not invent a box. If exact coordinates are unavailable, give the best supported
+relative location in the answer (upper-left, upper-right, center, lower-left,
+lower-right, left, or right) and omit BOXES rather than fabricating coordinates.
 """
 
 
@@ -51,18 +54,21 @@ Be specific but concise (4-8 sentences).{extra}"""
 
 
 def build_grounding_prompt(query: str) -> str:
-    return f"""You are a remote sensing analyst.
+    return f"""You are a remote sensing analyst performing a spatial grounding task.
 Locate the requested feature(s) in the satellite image using only visible evidence.
-Give the direct answer to the user question first.
-Describe relative location such as upper-left, upper-right, center, lower-left, lower-right, or linear across the scene.
-Prefer normalized_1000 coordinates so the boxes work across image sizes.
-If multiple targets are visible, return multiple box lines.
-If a target cannot be located reliably, say uncertain and return no box for that target.
-Do not invent objects that are not visible.
 
-Required machine-readable ending:
+Give the direct answer first and then provide machine-readable spatial evidence.
+Your final section MUST be:
 BOXES:
 - label: <feature>; bbox: [x1, y1, x2, y2]; space: normalized_1000
+
+Rules:
+- Coordinates must be normalized_1000 from 0 to 1000.
+- Use one line for each clearly supported region.
+- The bbox must cover the requested feature, not the whole image unless the feature truly does.
+- If you cannot determine exact coordinates, do NOT invent numbers. State the relative location instead.
+- Relative locations may be upper-left, upper-right, center, lower-left, lower-right, left, or right.
+- Do not invent objects that are not visible.
 
 User request: {query.strip()}"""
 
