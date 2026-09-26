@@ -1,4 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+
+const previewCache = new Map();
+const previewPending = new Map();
+
+function previewKey(file) {
+  return `${file?.name || ''}:${file?.size || 0}:${file?.lastModified || 0}`;
+}
 import { Image as ImageIcon, Loader2 } from 'lucide-react';
 import { postPreview } from '../../api/client';
 
@@ -154,37 +161,73 @@ export default function ImageAnalysisView({
 
   useEffect(() => {
     let alive = true;
-    const urls = [];
+
+    async function getPreview(file) {
+      const key = previewKey(file);
+
+      // Keep the object URL alive across React view changes. Navigation in this
+      // SPA unmounts/remounts ImageAnalysisView, but the uploaded file has not
+      // changed, so the preview should not be regenerated.
+      if (previewCache.has(key)) {
+        return previewCache.get(key);
+      }
+
+      if (!previewPending.has(key)) {
+        previewPending.set(
+          key,
+          postPreview(file).then((url) => {
+            previewCache.set(key, url);
+            previewPending.delete(key);
+            return url;
+          }).catch((error) => {
+            previewPending.delete(key);
+            throw error;
+          })
+        );
+      }
+
+      return previewPending.get(key);
+    }
 
     async function load() {
       setError('');
-      const next = [];
 
-      for (const file of files.slice(0, 2)) {
+      const currentFiles = files.slice(0, 2);
+      const initial = currentFiles.map((file) => previewCache.get(previewKey(file)) || null);
+
+      // Immediately show any cached previews instead of flashing the loading
+      // state when returning from History/Saved Results/etc.
+      if (alive) {
+        setPreviews(initial);
+      }
+
+      const next = [...initial];
+
+      for (let i = 0; i < currentFiles.length; i += 1) {
+        if (next[i]) continue;
+
         try {
-          const url = await postPreview(file);
-          urls.push(url);
-          next.push(url);
+          next[i] = await getPreview(currentFiles[i]);
+          if (alive) {
+            setPreviews([...next]);
+          }
         } catch (e) {
-          next.push(null);
-
+          next[i] = null;
           if (alive) {
             setError(e.message);
+            setPreviews([...next]);
           }
         }
       }
-
-      if (alive) {
-        setPreviews(next);
-      }
     }
 
-    setPreviews([]);
     load();
 
+    // Do not revoke cached object URLs here. They intentionally survive
+    // navigation/remounts and are replaced only when the uploaded file
+    // identity changes.
     return () => {
       alive = false;
-      urls.forEach(URL.revokeObjectURL);
     };
   }, [files]);
 
@@ -264,8 +307,10 @@ export default function ImageAnalysisView({
         <div style={styles.footer}>
           {resultData?.geojson?.features?.length
             ? boxes.some((b) => b.approximate)
-              ? 'Approximate red highlight derived from relative-location evidence.'
-              : 'Red highlights use backend spatial evidence; nearby regions are merged when appropriate.'
+              ? boxes.some((b) => b.label && b.label.toLowerCase().includes('water'))
+                ? 'Approximate red highlight derived from image-grounded water evidence.'
+                : 'Approximate red highlight derived from model relative-location evidence.'
+              : 'Red highlights use backend spatial evidence; overlapping and nearby regions are merged when appropriate.'
             : resultData
               ? 'No location boxes returned.'
               : 'File uploaded — run an analysis to request location evidence.'}

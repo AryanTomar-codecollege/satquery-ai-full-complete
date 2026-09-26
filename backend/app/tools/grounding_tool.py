@@ -189,39 +189,53 @@ def _normalize(rgb):
 
 
 def _dilate(mask, radius=2):
+    # Pad with False instead of np.roll so pixels at the image edge do not
+    # wrap around and connect unrelated regions.
     result = mask.copy()
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            result |= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+    for _ in range(radius):
+        padded = np.pad(result, 1, mode="constant", constant_values=False)
+        result = (
+            padded[:-2, :-2] | padded[:-2, 1:-1] | padded[:-2, 2:] |
+            padded[1:-1, :-2] | padded[1:-1, 1:-1] | padded[1:-1, 2:] |
+            padded[2:, :-2] | padded[2:, 1:-1] | padded[2:, 2:]
+        )
     return result
 
 
 def _erode(mask, radius=1):
     result = mask.copy()
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            result &= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+    for _ in range(radius):
+        padded = np.pad(result, 1, mode="constant", constant_values=False)
+        result = (
+            padded[:-2, :-2] & padded[:-2, 1:-1] & padded[:-2, 2:] &
+            padded[1:-1, :-2] & padded[1:-1, 1:-1] & padded[1:-1, 2:] &
+            padded[2:, :-2] & padded[2:, 1:-1] & padded[2:, 2:]
+        )
     return result
 
 
 def _water_mask(rgb):
     r, g, b = _normalize(rgb)
     brightness = (r + g + b) / 3
+
+    # Water in natural-colour optical imagery is commonly darker and has
+    # blue/cyan content, while vegetation has a stronger green component.
     blue_advantage = b - r
     cyan_advantage = ((g + b) / 2) - r
+    vegetation = (g > r + 0.07) & (g > b + 0.025)
 
-    # Conservative natural-colour water fallback.
     mask = (
-        (brightness < 0.46)
+        (brightness < 0.62)
+        & ~vegetation
         & (
-            ((blue_advantage > 0.035) & (b > 0.28))
-            | ((cyan_advantage > 0.055) & (b > 0.32) & (g > 0.28))
+            ((blue_advantage > 0.035) & (b > 0.24))
+            | ((cyan_advantage > 0.045) & (g > 0.22) & (b > 0.24))
         )
     )
 
-    # Small morphological cleanup without adding another dependency.
-    mask = _dilate(mask, 2)
-    mask = _erode(mask, 2)
+    # Small cleanup without connecting opposite image edges.
+    mask = _dilate(mask, 1)
+    mask = _erode(mask, 1)
     return mask
 
 
@@ -302,12 +316,83 @@ def _water_bboxes(file_bytes, query):
     ]
 
 
+def _merge_pixel_bboxes(boxes, image_width, image_height, gap_normalized=65.0):
+    """
+    Merge overlapping or nearby pixel boxes in normalized image coordinates.
+    This prevents one continuous water body from appearing as multiple
+    overlapping rectangles while keeping genuinely distant bodies separate.
+    """
+    if not boxes:
+        return []
+
+    sx = 1000.0 / max(1, image_width)
+    sy = 1000.0 / max(1, image_height)
+    groups = [
+        {
+            "bbox": [
+                max(0.0, min(1000.0, b[0] * sx)),
+                max(0.0, min(1000.0, b[1] * sy)),
+                max(0.0, min(1000.0, b[2] * sx)),
+                max(0.0, min(1000.0, b[3] * sy)),
+            ]
+        }
+        for b in boxes
+    ]
+
+    def gap(a, b):
+        return (
+            max(a[0] - b[2], b[0] - a[2], 0.0),
+            max(a[1] - b[3], b[1] - a[3], 0.0),
+        )
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                gx, gy = gap(groups[i]["bbox"], groups[j]["bbox"])
+                if gx <= gap_normalized and gy <= gap_normalized:
+                    a, b = groups[i]["bbox"], groups[j]["bbox"]
+                    groups[i]["bbox"] = [
+                        min(a[0], b[0]), min(a[1], b[1]),
+                        max(a[2], b[2]), max(a[3], b[3]),
+                    ]
+                    groups.pop(j)
+                    changed = True
+                    break
+            if changed:
+                break
+
+    return [
+        [
+            g["bbox"][0] / sx,
+            g["bbox"][1] / sy,
+            g["bbox"][2] / sx,
+            g["bbox"][3] / sy,
+        ]
+        for g in groups
+    ]
+
+
 def _visual_water_fallback(file_bytes, query):
     boxes = _water_bboxes(file_bytes, query)
-    features = []
+    if not boxes:
+        return []
 
-    for bbox in boxes:
-        features.append({
+    with rasterio.MemoryFile(file_bytes) as mem:
+        with mem.open() as src:
+            image_width, image_height = src.width, src.height
+
+    # Merge overlapping/nearby pieces into the same physical water body.
+    boxes = _merge_pixel_bboxes(
+        boxes,
+        image_width=image_width,
+        image_height=image_height,
+        gap_normalized=65.0,
+    )
+
+    return [
+        {
             "type": "Feature",
             "properties": {
                 "label": _target_label(query),
@@ -318,9 +403,9 @@ def _visual_water_fallback(file_bytes, query):
                 "relative_location": "raster-detected",
             },
             "geometry": None,
-        })
-
-    return features
+        }
+        for bbox in boxes
+    ]
 
 
 def run(file_tuple, file_bytes: bytes, query: str):
