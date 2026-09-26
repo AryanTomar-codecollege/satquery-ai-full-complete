@@ -17,25 +17,21 @@ BOX_RE = re.compile(
     re.I,
 )
 
-# EarthDial sometimes answers a grounding question with a relative position
-# ("upper left", "center", etc.) but omits the machine-readable BOXES block.
-# This fallback preserves that model evidence as an explicitly approximate
-# spatial region instead of pretending it is an exact detection.
+# Approximate fallback only when EarthDial gives a relative location.
 RELATIVE_REGION_BBOXES = {
-    "upper-left": [0, 0, 550, 550],
-    "upper-right": [450, 0, 1000, 550],
-    "lower-left": [0, 450, 550, 1000],
-    "lower-right": [450, 450, 1000, 1000],
+    "upper-left": [0, 0, 500, 500],
+    "upper-right": [500, 0, 1000, 500],
+    "lower-left": [0, 500, 500, 1000],
+    "lower-right": [500, 500, 1000, 1000],
     "center": [250, 250, 750, 750],
-    "left": [0, 100, 600, 900],
-    "right": [400, 100, 1000, 900],
-    "upper": [0, 0, 1000, 600],
-    "lower": [0, 400, 1000, 1000],
+    "left": [0, 150, 500, 850],
+    "right": [500, 150, 1000, 850],
+    "upper": [100, 0, 900, 500],
+    "lower": [100, 500, 900, 1000],
 }
 
-# Bounding boxes are initially kept in normalized_1000 space.  Nearby boxes
-# are clustered before conversion to image pixels so the same logic works for
-# GeoTIFFs of different sizes.
+# Merge overlapping/nearby normalized boxes so one continuous feature
+# does not appear as many separate rectangles.
 MERGE_GAP = 65.0
 
 
@@ -46,21 +42,39 @@ def parse_boxes(answer):
     for match in BOX_LINE_RE.finditer(answer or ""):
         nums = [float(x.strip()) for x in match.group("bbox").replace(",", " ").split()]
         if len(nums) == 4:
-            parsed.append((match.group("label").strip(), nums, match.group("space").lower()))
+            parsed.append(
+                (
+                    match.group("label").strip(),
+                    nums,
+                    match.group("space").lower(),
+                )
+            )
             consumed.add(match.span())
 
     for match in BOX_RE.finditer(answer or ""):
         if any(start <= match.start() < end for start, end in consumed):
             continue
-        parsed.append(("detected feature", [float(x) for x in match.groups()], "pixel"))
+        parsed.append(
+            ("detected feature", [float(x) for x in match.groups()], "pixel")
+        )
 
     return parsed
 
 
 def _clip_normalized_bbox(bbox):
     x1, y1, x2, y2 = [float(v) for v in bbox]
-    x1, x2 = sorted((max(0.0, min(1000.0, x1)), max(0.0, min(1000.0, x2))))
-    y1, y2 = sorted((max(0.0, min(1000.0, y1)), max(0.0, min(1000.0, y2))))
+    x1, x2 = sorted(
+        (
+            max(0.0, min(1000.0, x1)),
+            max(0.0, min(1000.0, x2)),
+        )
+    )
+    y1, y2 = sorted(
+        (
+            max(0.0, min(1000.0, y1)),
+            max(0.0, min(1000.0, y2)),
+        )
+    )
     return [x1, y1, x2, y2]
 
 
@@ -73,7 +87,6 @@ def _bbox_gap(a, b):
 
 
 def _should_merge(a, b, threshold=MERGE_GAP):
-    """Merge overlapping/nearby boxes, including boxes touching on one axis."""
     gap_x, gap_y = _bbox_gap(a, b)
     return gap_x <= threshold and gap_y <= threshold
 
@@ -89,13 +102,12 @@ def _merge_two(a, b):
 
 def merge_nearby_boxes(items, threshold=MERGE_GAP):
     """
-    Cluster nearby/overlapping boxes into larger regions.
-
-    Each item is (label, bbox, space).  The output uses normalized_1000 boxes.
-    Merging is transitive: A close to B and B close to C produces one region.
-    Boxes that are far apart remain separate regions.
+    Merge overlapping/nearby normalized boxes transitively.
+    Distant regions remain separate.
+    Pixel-space boxes are preserved without unsafe cross-space merging.
     """
-    normalized = []
+    groups = []
+    passthrough = []
 
     for label, bbox, space in items:
         try:
@@ -104,50 +116,50 @@ def merge_nearby_boxes(items, threshold=MERGE_GAP):
             elif space == "normalized_1":
                 nb = _clip_normalized_bbox([float(v) * 1000.0 for v in bbox])
             else:
-                # Pixel-space boxes cannot be safely merged with normalized
-                # boxes without image dimensions. Keep them as-is; conversion
-                # happens later and the original evidence is preserved.
-                normalized.append((label, bbox, space))
+                passthrough.append((label, bbox, space))
                 continue
+
             if nb[2] > nb[0] and nb[3] > nb[1]:
-                normalized.append((label, nb, "normalized_1000"))
+                groups.append({"labels": [label], "bbox": nb})
         except (TypeError, ValueError):
             continue
 
-    groups = [
-        {"labels": [label], "bbox": list(bbox), "space": space}
-        for label, bbox, space in normalized
-    ]
-
-    # Repeatedly merge until no more groups can be joined. This makes the
-    # clustering transitive instead of depending on EarthDial's output order.
     changed = True
     while changed:
         changed = False
+
         for i in range(len(groups)):
-            if changed:
-                break
+            merged = False
+
             for j in range(i + 1, len(groups)):
-                a = groups[i]
-                b = groups[j]
-                if a["space"] != "normalized_1000" or b["space"] != "normalized_1000":
-                    continue
-                if _should_merge(a["bbox"], b["bbox"], threshold):
-                    a["bbox"] = _merge_two(a["bbox"], b["bbox"])
-                    a["labels"].extend(b["labels"])
+                if _should_merge(groups[i]["bbox"], groups[j]["bbox"], threshold):
+                    groups[i]["bbox"] = _merge_two(
+                        groups[i]["bbox"], groups[j]["bbox"]
+                    )
+                    groups[i]["labels"].extend(groups[j]["labels"])
                     groups.pop(j)
                     changed = True
+                    merged = True
                     break
 
-    merged = []
-    for group in groups:
-        label = group["labels"][0] if group["labels"] else "detected feature"
-        merged.append((label, group["bbox"], group["space"]))
-    return merged
+            if merged:
+                break
+
+    merged = [
+        (
+            group["labels"][0] if group["labels"] else "detected feature",
+            group["bbox"],
+            "normalized_1000",
+        )
+        for group in groups
+    ]
+
+    return merged + passthrough
 
 
 def _relative_region(answer: str):
     text = re.sub(r"\s+", " ", (answer or "").lower())
+
     patterns = (
         (r"\bupper[\s-]+left\b|\btop[\s-]+left\b", "upper-left"),
         (r"\bupper[\s-]+right\b|\btop[\s-]+right\b", "upper-right"),
@@ -159,9 +171,11 @@ def _relative_region(answer: str):
         (r"\bupper(?:\s+part|\s+portion)?\b|\btop(?:\s+part|\s+portion)?\b", "upper"),
         (r"\blower(?:\s+part|\s+portion)?\b|\bbottom(?:\s+part|\s+portion)?\b", "lower"),
     )
+
     for pattern, key in patterns:
         if re.search(pattern, text):
             return key, RELATIVE_REGION_BBOXES[key]
+
     return None
 
 
@@ -201,47 +215,60 @@ def run(file_tuple, file_bytes: bytes, query: str):
     answer = str(result.get("answer", "")).strip()
 
     raw_boxes = parse_boxes(answer)
-    boxes = merge_nearby_boxes(raw_boxes)
+    merged_boxes = merge_nearby_boxes(raw_boxes)
     features = []
     evidence_source = "model_box"
-    merged_count = max(0, len(raw_boxes) - len(boxes))
 
-    for label, bbox, space in boxes:
+    for label, bbox, space in merged_boxes:
         feature = _convert_feature(file_bytes, label, bbox, space)
         if feature:
             features.append(feature)
 
-    # Fallback only when EarthDial supplied a relative location but omitted
-    # machine-readable boxes. It remains explicitly approximate.
+    merged_count = max(0, len(raw_boxes) - len(merged_boxes))
+
+    # Fallback only when EarthDial gives relative location but no machine boxes.
     if not features:
         relative = _relative_region(answer)
+
         if relative:
             key, bbox = relative
+
             try:
                 pixel_bbox = normalize_bbox_to_pixel(
-                    file_bytes, bbox, "normalized_1000"
+                    file_bytes,
+                    bbox,
+                    "normalized_1000",
                 )
-                features.append({
-                    "type": "Feature",
-                    "properties": {
-                        "label": _target_label(query),
-                        "bbox_pixel": pixel_bbox,
-                        "bbox_space": "pixel",
-                        "evidence_source": "model_relative_location",
-                        "approximate": True,
-                        "relative_location": key,
-                    },
-                    "geometry": None,
-                })
+
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "label": _target_label(query),
+                            "bbox_pixel": pixel_bbox,
+                            "bbox_space": "pixel",
+                            "evidence_source": "model_relative_location",
+                            "approximate": True,
+                            "relative_location": key,
+                        },
+                        "geometry": None,
+                    }
+                )
+
                 evidence_source = "model_relative_location"
             except Exception:
                 pass
 
     return {
         "answer": answer,
-        "geojson": {"type": "FeatureCollection", "features": features},
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": features,
+        },
         "confidence": estimate_confidence(
-            "grounding", answer, spatial_features=len(features)
+            "grounding",
+            answer,
+            spatial_features=len(features),
         ),
         "model_used": result.get("model", "EarthDial_4B_MS"),
         "parameters": {
@@ -253,8 +280,9 @@ def run(file_tuple, file_bytes: bytes, query: str):
             "merge_gap_normalized": MERGE_GAP,
             "evidence_source": evidence_source,
             "approximate_boxes": sum(
-                1 for f in features
-                if f.get("properties", {}).get("approximate") is True
+                1
+                for feature in features
+                if feature.get("properties", {}).get("approximate") is True
             ),
         },
     }

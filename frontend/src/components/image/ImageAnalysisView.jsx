@@ -61,6 +61,7 @@ function PreviewPane({
             style={styles.image}
             onLoad={(event) => {
               const image = event.currentTarget;
+
               if (!imageWidth || !imageHeight) {
                 setNaturalSize({
                   width: image.naturalWidth,
@@ -100,9 +101,9 @@ function PreviewPane({
                       width={w}
                       height={h}
                       fill="#ef4444"
-                      fillOpacity="0.18"
+                      fillOpacity="0.10"
                       stroke="#ef4444"
-                      strokeWidth={Math.max(4, Math.min(imageWidth, imageHeight) / 250)}
+                      strokeWidth="2.5"
                       vectorEffect="non-scaling-stroke"
                     />
 
@@ -110,14 +111,16 @@ function PreviewPane({
                       x={x + 8}
                       y={Math.max(20, y + 18)}
                       fill="#ffffff"
-                      fontSize={Math.max(16, Math.min(imageWidth, imageHeight) / 35)}
+                      fontSize={Math.max(
+                        16,
+                        Math.min(imageWidth, imageHeight) / 35
+                      )}
                       fontWeight="700"
                       paintOrder="stroke"
                       stroke="#111827"
-                      strokeWidth="5"
+                      strokeWidth="4"
                     >
                       {box.label}
-                      {box.approximate ? ' · approximate' : ''}
                     </text>
                   </g>
                 );
@@ -164,11 +167,16 @@ export default function ImageAnalysisView({
           next.push(url);
         } catch (e) {
           next.push(null);
-          if (alive) setError(e.message);
+
+          if (alive) {
+            setError(e.message);
+          }
         }
       }
 
-      if (alive) setPreviews(next);
+      if (alive) {
+        setPreviews(next);
+      }
     }
 
     setPreviews([]);
@@ -180,7 +188,10 @@ export default function ImageAnalysisView({
     };
   }, [files]);
 
-  const boxes = useMemo(() => featureBoxes(resultData), [resultData]);
+  const boxes = useMemo(
+    () => featureBoxes(resultData),
+    [resultData]
+  );
 
   const showTwo =
     files.length > 1 &&
@@ -253,8 +264,8 @@ export default function ImageAnalysisView({
         <div style={styles.footer}>
           {resultData?.geojson?.features?.length
             ? boxes.some((b) => b.approximate)
-              ? 'Approximate red highlight derived from EarthDial relative-location evidence.'
-              : 'Red highlights are drawn from backend spatial evidence; nearby regions are merged when they belong to the same area.'
+              ? 'Approximate red highlight derived from relative-location evidence.'
+              : 'Red highlights use backend spatial evidence; nearby regions are merged when appropriate.'
             : resultData
               ? 'No location boxes returned.'
               : 'File uploaded — run an analysis to request location evidence.'}
