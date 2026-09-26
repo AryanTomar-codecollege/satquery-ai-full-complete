@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Image as ImageIcon, Loader2 } from 'lucide-react';
 import { postPreview } from '../../api/client';
 
@@ -12,11 +12,23 @@ function featureBoxes(result) {
     .map((f, i) => ({
       id: i,
       label: f.properties.label || f.properties.name || 'Detected feature',
-      bbox: f.properties.bbox_pixel,
+      bbox: f.properties.bbox_pixel.map(Number),
       approximate: f.properties.approximate === true,
-    }));
+    }))
+    .filter((f) => f.bbox.every(Number.isFinite));
 }
 
+/*
+ * Important overlay fix:
+ *
+ * The uploaded PNG uses CSS object-fit: contain. Instead of calculating
+ * pixel-to-screen coordinates in JavaScript, the SVG uses the original
+ * GeoTIFF pixel dimensions as its viewBox and preserveAspectRatio="xMidYMid meet".
+ *
+ * SVG's "meet" mapping is the same contain-style mapping used by the image,
+ * so bbox_pixel coordinates land on the same displayed pixels even when the
+ * image is letterboxed.
+ */
 function PreviewPane({
   file,
   preview,
@@ -26,25 +38,17 @@ function PreviewPane({
   showOverlay,
   label,
 }) {
-  const paneRef = useRef(null);
-  const [paneSize, setPaneSize] = useState({ width: 1, height: 1 });
+  const [naturalSize, setNaturalSize] = useState({
+    width: Number(width) || 0,
+    height: Number(height) || 0,
+  });
 
   useEffect(() => {
-    if (!paneRef.current) return undefined;
-
-    const update = () => {
-      const rect = paneRef.current.getBoundingClientRect();
-      setPaneSize({
-        width: Math.max(1, rect.width),
-        height: Math.max(1, rect.height),
-      });
-    };
-
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(paneRef.current);
-    return () => observer.disconnect();
-  }, []);
+    setNaturalSize({
+      width: Number(width) || 0,
+      height: Number(height) || 0,
+    });
+  }, [width, height]);
 
   if (!file) {
     return (
@@ -55,68 +59,89 @@ function PreviewPane({
     );
   }
 
-  const imageWidth = Math.max(1, Number(width) || 1);
-  const imageHeight = Math.max(1, Number(height) || 1);
-
-  // Match the browser's object-fit: contain geometry so overlays land on
-  // the actual displayed image rather than on the surrounding letterbox.
-  const scale = Math.min(
-    paneSize.width / imageWidth,
-    paneSize.height / imageHeight
-  );
-  const displayedWidth = imageWidth * scale;
-  const displayedHeight = imageHeight * scale;
-  const offsetX = (paneSize.width - displayedWidth) / 2;
-  const offsetY = (paneSize.height - displayedHeight) / 2;
+  const imageWidth = naturalSize.width;
+  const imageHeight = naturalSize.height;
 
   return (
-    <div ref={paneRef} style={styles.pane}>
+    <div style={styles.pane}>
       {preview ? (
-        <img
-          src={preview}
-          alt={file.name}
-          style={styles.image}
-        />
+        <>
+          <img
+            src={preview}
+            alt={file.name}
+            style={styles.image}
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              if (!imageWidth || !imageHeight) {
+                setNaturalSize({
+                  width: image.naturalWidth,
+                  height: image.naturalHeight,
+                });
+              }
+            }}
+          />
+
+          {showOverlay && imageWidth > 0 && imageHeight > 0 && (
+            <svg
+              aria-label="AI spatial evidence overlay"
+              viewBox={`0 0 ${imageWidth} ${imageHeight}`}
+              preserveAspectRatio="xMidYMid meet"
+              style={styles.overlay}
+            >
+              {boxes.map((box) => {
+                const [rawX1, rawY1, rawX2, rawY2] = box.bbox;
+
+                const x1 = Math.max(0, Math.min(imageWidth, rawX1));
+                const y1 = Math.max(0, Math.min(imageHeight, rawY1));
+                const x2 = Math.max(0, Math.min(imageWidth, rawX2));
+                const y2 = Math.max(0, Math.min(imageHeight, rawY2));
+
+                const x = Math.min(x1, x2);
+                const y = Math.min(y1, y2);
+                const w = Math.abs(x2 - x1);
+                const h = Math.abs(y2 - y1);
+
+                if (w <= 0 || h <= 0) return null;
+
+                return (
+                  <g key={box.id}>
+                    <rect
+                      x={x}
+                      y={y}
+                      width={w}
+                      height={h}
+                      fill={box.approximate ? '#f59e0b' : '#ef4444'}
+                      fillOpacity="0.20"
+                      stroke={box.approximate ? '#f59e0b' : '#ef4444'}
+                      strokeWidth={Math.max(4, Math.min(imageWidth, imageHeight) / 250)}
+                      vectorEffect="non-scaling-stroke"
+                    />
+
+                    <text
+                      x={x + 8}
+                      y={Math.max(20, y + 18)}
+                      fill="#ffffff"
+                      fontSize={Math.max(16, Math.min(imageWidth, imageHeight) / 35)}
+                      fontWeight="700"
+                      paintOrder="stroke"
+                      stroke="#111827"
+                      strokeWidth="5"
+                    >
+                      {box.label}
+                      {box.approximate ? ' · approximate' : ''}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+        </>
       ) : (
         <div style={styles.loading}>
           <Loader2 size={24} className="spinner" />
           <span>Creating satellite preview…</span>
         </div>
       )}
-
-      {showOverlay &&
-        preview &&
-        boxes.map((box) => {
-          const [x1, y1, x2, y2] = box.bbox;
-
-          const left = offsetX + x1 * scale;
-          const top = offsetY + y1 * scale;
-          const boxWidth = Math.max(2, (x2 - x1) * scale);
-          const boxHeight = Math.max(2, (y2 - y1) * scale);
-
-          return (
-            <div
-              key={box.id}
-              style={{
-                ...styles.box,
-                left,
-                top,
-                width: boxWidth,
-                height: boxHeight,
-              }}
-            >
-              <span
-                style={{
-                  ...styles.label,
-                  background: box.approximate ? '#b45309' : '#ef4444',
-                }}
-              >
-                {box.label}
-                {box.approximate ? ' · approximate' : ''}
-              </span>
-            </div>
-          );
-        })}
 
       <div style={styles.badge}>{label || file.name}</div>
     </div>
@@ -207,7 +232,7 @@ export default function ImageAnalysisView({
       {showTwo ? (
         <div style={styles.grid}>
           {files.slice(0, 2).map((file, i) => {
-            const d = dims[i] || { width: 1, height: 1 };
+            const d = dims[i] || {};
 
             return (
               <PreviewPane
@@ -227,8 +252,8 @@ export default function ImageAnalysisView({
         <PreviewPane
           file={files[active]}
           preview={previews[active]}
-          width={(dims[active] || {}).width || 1}
-          height={(dims[active] || {}).height || 1}
+          width={(dims[active] || {}).width}
+          height={(dims[active] || {}).height}
           boxes={boxes}
           showOverlay={showOverlay}
           label={files[active]?.name}
@@ -312,7 +337,16 @@ const styles = {
     width: '100%',
     height: '100%',
     objectFit: 'contain',
+    objectPosition: 'center',
     background: '#020617',
+  },
+  overlay: {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    pointerEvents: 'none',
+    zIndex: 5,
   },
   loading: {
     position: 'absolute',
@@ -333,27 +367,6 @@ const styles = {
     gap: 10,
     color: '#94a3b8',
     background: '#020617',
-  },
-  box: {
-    position: 'absolute',
-    border: '2px solid #ef4444',
-    background: 'rgba(239,68,68,.18)',
-    boxSizing: 'border-box',
-    pointerEvents: 'none',
-    zIndex: 5,
-  },
-  label: {
-    position: 'absolute',
-    top: -21,
-    left: -2,
-    color: '#fff',
-    fontSize: 10,
-    padding: '2px 4px',
-    whiteSpace: 'nowrap',
-    borderRadius: 3,
-    maxWidth: 220,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
   },
   notice: {
     padding: '7px 12px',
@@ -395,3 +408,4 @@ const styles = {
     minHeight: 0,
   },
 };
+
