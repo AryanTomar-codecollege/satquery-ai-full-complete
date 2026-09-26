@@ -18,14 +18,28 @@ def maybe_add_location_request(query: str, base_prompt: str, *, force: bool = Fa
     return base_prompt + """
 
 Also locate the main relevant regions when supported by the image.
+You MUST scan the entire image before deciding the spatial answer. A requested
+feature may extend across more than one part of the image.
+If the same feature appears in several nearby/overlapping regions, report all
+of those regions separately so the backend can combine them into one region.
+If there are clearly separated instances of the requested feature, report a
+separate BOXES line for each instance.
+
 You MUST attempt machine-readable location evidence at the end.
-If you can determine a region, return exactly:
+Use exactly this format:
 BOXES:
 - label: <feature>; bbox: [x1, y1, x2, y2]; space: normalized_1000
-Use one BOXES line per region. Use normalized_1000 coordinates from 0 to 1000.
-Do not invent a box. If exact coordinates are unavailable, give the best supported
-relative location in the answer (upper-left, upper-right, center, lower-left,
-lower-right, left, or right) and omit BOXES rather than fabricating coordinates.
+
+Rules:
+- Coordinates must be normalized_1000 from 0 to 1000.
+- Use one BOXES line for every clearly supported region/part.
+- Scan the whole image; do not stop after finding only the first occurrence.
+- For a large continuous feature such as a water body, vegetation area, or
+  built-up region, provide enough nearby boxes to cover its visible extent.
+- Keep boxes reasonably tight around the visible feature. Do not use a whole
+  image box unless the requested feature actually occupies the whole image.
+- Do not invent coordinates. If exact coordinates are unavailable, state the
+  best supported relative location instead and omit BOXES.
 """
 
 
@@ -55,20 +69,29 @@ Be specific but concise (4-8 sentences).{extra}"""
 
 def build_grounding_prompt(query: str) -> str:
     return f"""You are a remote sensing analyst performing a spatial grounding task.
-Locate the requested feature(s) in the satellite image using only visible evidence.
+Locate ALL visible regions of the requested feature(s) across the ENTIRE satellite image.
+Do not stop after finding the first region.
 
-Give the direct answer first and then provide machine-readable spatial evidence.
-Your final section MUST be:
+Give the direct answer first, then provide machine-readable spatial evidence.
+Your final section MUST contain one BOXES line for every supported region:
 BOXES:
 - label: <feature>; bbox: [x1, y1, x2, y2]; space: normalized_1000
 
 Rules:
 - Coordinates must be normalized_1000 from 0 to 1000.
-- Use one line for each clearly supported region.
-- The bbox must cover the requested feature, not the whole image unless the feature truly does.
-- If you cannot determine exact coordinates, do NOT invent numbers. State the relative location instead.
-- Relative locations may be upper-left, upper-right, center, lower-left, lower-right, left, or right.
-- Do not invent objects that are not visible.
+- Scan the entire image before producing the coordinates.
+- If the requested feature is one continuous/connected area spread across the
+  image, provide multiple nearby/overlapping boxes that together cover the area.
+- If the requested feature occurs as clearly separated distant regions,
+  provide separate boxes for those regions.
+- Keep each bbox reasonably tight around the visible feature.
+- The backend will merge nearby/overlapping boxes that belong to the same
+  spatial region, so do not omit valid nearby parts merely because they touch.
+- Do not use one large quadrant box as a substitute for actual feature evidence.
+- Do not invent coordinates or objects. If machine-readable coordinates cannot
+  be determined, state the best supported relative location and omit BOXES.
+- Relative locations may be upper-left, upper-right, center, lower-left,
+  lower-right, left, or right.
 
 User request: {query.strip()}"""
 

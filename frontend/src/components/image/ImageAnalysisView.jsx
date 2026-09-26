@@ -18,17 +18,6 @@ function featureBoxes(result) {
     .filter((f) => f.bbox.every(Number.isFinite));
 }
 
-/*
- * Important overlay fix:
- *
- * The uploaded PNG uses CSS object-fit: contain. Instead of calculating
- * pixel-to-screen coordinates in JavaScript, the SVG uses the original
- * GeoTIFF pixel dimensions as its viewBox and preserveAspectRatio="xMidYMid meet".
- *
- * SVG's "meet" mapping is the same contain-style mapping used by the image,
- * so bbox_pixel coordinates land on the same displayed pixels even when the
- * image is letterboxed.
- */
 function PreviewPane({
   file,
   preview,
@@ -110,9 +99,9 @@ function PreviewPane({
                       y={y}
                       width={w}
                       height={h}
-                      fill={box.approximate ? '#f59e0b' : '#ef4444'}
-                      fillOpacity="0.20"
-                      stroke={box.approximate ? '#f59e0b' : '#ef4444'}
+                      fill="#ef4444"
+                      fillOpacity="0.18"
+                      stroke="#ef4444"
                       strokeWidth={Math.max(4, Math.min(imageWidth, imageHeight) / 250)}
                       vectorEffect="non-scaling-stroke"
                     />
@@ -264,8 +253,8 @@ export default function ImageAnalysisView({
         <div style={styles.footer}>
           {resultData?.geojson?.features?.length
             ? boxes.some((b) => b.approximate)
-              ? 'Approximate highlight derived from EarthDial relative-location evidence.'
-              : 'AI location evidence is drawn from backend pixel bbox properties.'
+              ? 'Approximate red highlight derived from EarthDial relative-location evidence.'
+              : 'Red highlights are drawn from backend spatial evidence; nearby regions are merged when they belong to the same area.'
             : resultData
               ? 'No location boxes returned.'
               : 'File uploaded — run an analysis to request location evidence.'}
@@ -408,4 +397,3 @@ const styles = {
     minHeight: 0,
   },
 };
-
